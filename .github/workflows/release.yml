@@ -1,0 +1,17 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: PerAsperaMods/.github/.github/workflows/release-mod.yml@main
+    with:
+      mod-id: MpModReconMod
+      mod-type: csharp
+    secrets:
+      gamelibs-token: ${{ secrets.GAMELIBS_TOKEN }}
