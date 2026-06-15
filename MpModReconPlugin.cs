@@ -7,7 +7,7 @@ using System;
 
 namespace PerAspera.MpModRecon
 {
-    [BepInPlugin("com.peraspera.wafhien.mpmodrecon", "MpModReconMod", "1.0.0")]
+    [BepInPlugin("com.peraspera.wafhien.mpmodrecon", "MpModReconMod", "1.1.0")]
     public class MpModReconPlugin : BasePlugin
     {
         internal static LogAspera L = null!;
@@ -15,7 +15,7 @@ namespace PerAspera.MpModRecon
         public override void Load()
         {
             L = new LogAspera("MpModRecon");
-            L.Info("=== MpModRecon Phase 4 — handshake LobbyData pa_modset ===");
+            L.Info("=== MpModRecon v1.1.0 — handshake pa_modset + blocage client via MainMenu.StartGame ===");
 
             var harmony = new Harmony("com.peraspera.wafhien.mpmodrecon");
             harmony.PatchAll(typeof(MpModReconPlugin).Assembly);
@@ -153,7 +153,9 @@ namespace PerAspera.MpModRecon
         }
     }
 
-    // ─── PATCH 4 : LobbyPanel.OnStart — bloquer si mismatch ─────────────────
+    // ─── PATCH 4 : LobbyPanel.OnStart — bloquer si mismatch (hôte uniquement) ──
+    // Ce patch bloque le bouton Start côté hôte et affiche le message dans l'UI.
+    // Il ne suffit pas seul : le client reçoit le "start" via réseau, pas ce code.
     [HarmonyPatch(typeof(LobbyPanel), nameof(LobbyPanel.OnStart))]
     internal static class LobbyOnStartPatch
     {
@@ -163,9 +165,8 @@ namespace PerAspera.MpModRecon
             {
                 if (MpState.MismatchMessage != null)
                 {
-                    MpModReconPlugin.L.Warning($"[LobbyPanel.OnStart] BLOQUÉ — {MpState.MismatchMessage}");
+                    MpModReconPlugin.L.Warning($"[LobbyPanel.OnStart] BLOQUÉ (hôte) — {MpState.MismatchMessage}");
 
-                    // Afficher le message dans privacityTxt (champ UI natif du panneau lobby)
                     try
                     {
                         if (__instance.privacityTxt != null)
@@ -173,7 +174,7 @@ namespace PerAspera.MpModRecon
                     }
                     catch { }
 
-                    return false; // Annule OnStart
+                    return false;
                 }
             }
             catch (Exception ex)
@@ -181,7 +182,31 @@ namespace PerAspera.MpModRecon
                 MpModReconPlugin.L.Warning($"[LobbyPanel.OnStart] EXCEPTION: {ex.Message}");
             }
 
-            return true; // Laisse passer
+            return true;
+        }
+    }
+
+    // ─── PATCH 4b : MainMenu.StartGame — bloquer côté client ─────────────────
+    // StartGame() est une méthode STATIQUE appelée sur toutes les machines (hôte
+    // et client) quand une partie MP démarre. C'est le seul point commun qui tire
+    // des deux côtés — c'est ici qu'on bloque le client.
+    [HarmonyPatch(typeof(MainMenu), nameof(MainMenu.StartGame))]
+    internal static class StartGamePatch
+    {
+        static bool Prefix(bool isMultiplayer)
+        {
+            try
+            {
+                if (!isMultiplayer || MpState.MismatchMessage == null) return true;
+
+                MpModReconPlugin.L.Warning($"[MainMenu.StartGame] BLOQUÉ (client) — {MpState.MismatchMessage}");
+                return false; // Empêche le chargement de scène
+            }
+            catch (Exception ex)
+            {
+                MpModReconPlugin.L.Warning($"[MainMenu.StartGame] EXCEPTION: {ex.Message}");
+                return true;
+            }
         }
     }
 
