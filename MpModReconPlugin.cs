@@ -4,10 +4,11 @@ using HarmonyLib;
 using PerAspera.Core;
 using PerAspera.Networking;
 using System;
+using UnityEngine;
 
 namespace PerAspera.MpModRecon
 {
-    [BepInPlugin("com.peraspera.wafhien.mpmodrecon", "MpModReconMod", "1.1.0")]
+    [BepInPlugin("com.peraspera.wafhien.mpmodrecon", "MpModReconMod", "1.4.0")]
     public class MpModReconPlugin : BasePlugin
     {
         internal static LogAspera L = null!;
@@ -15,7 +16,7 @@ namespace PerAspera.MpModRecon
         public override void Load()
         {
             L = new LogAspera("MpModRecon");
-            L.Info("=== MpModRecon v1.1.0 — handshake pa_modset + blocage client via MainMenu.StartGame ===");
+            L.Info("=== MpModRecon v1.4.0 — PlayerData bidirectional handshake (host+client both blocked) ===");
 
             var harmony = new Harmony("com.peraspera.wafhien.mpmodrecon");
             harmony.PatchAll(typeof(MpModReconPlugin).Assembly);
@@ -27,14 +28,18 @@ namespace PerAspera.MpModRecon
     {
         internal const string PA_MODSET_KEY = "pa_modset";
 
-        // Set dans CreateLobby : indique qu'on est l'hôte pour ce lobby
         internal static bool IsHost = false;
-
-        // Snapshot PlayerPrefs["Mods"] capturé à OnLobbyEnter (hôte + client)
         internal static string? ModsSnapshot = null;
-
-        // Résultat du handshake — null = pas encore vérifié
         internal static string? MismatchMessage = null;
+        internal static Lobby? CurrentLobby = null;
+
+        internal static string NormalizeMods(string mods)
+        {
+            if (string.IsNullOrEmpty(mods)) return "";
+            var parts = mods.Split(',');
+            Array.Sort(parts);
+            return string.Join(",", parts).Trim().ToLowerInvariant();
+        }
     }
 
     // ─── PATCH 1 : CreateLobby — marquer hôte ────────────────────────────────
@@ -45,11 +50,14 @@ namespace PerAspera.MpModRecon
         {
             MpState.IsHost = true;
             MpState.MismatchMessage = null;
-            MpModReconPlugin.L.Info("[CreateLobby] IsHost=true — sera l'hôte du lobby");
+            MpState.CurrentLobby = null;
+            MpModReconPlugin.L.Info("[CreateLobby] IsHost=true");
         }
     }
 
-    // ─── PATCH 2 : OnLobbyEnter — hôte écrit, client lit et compare ──────────
+    // ─── PATCH 2 : OnLobbyEnter — tous écrivent PlayerData + client compare ──
+    // PlayerData = Steam member data : chaque membre écrit ses propres données,
+    // lisibles par tous (notamment l'hôte dans LobbyPanel.OnStart).
     [HarmonyPatch(typeof(MultiplayerMainMenu), nameof(MultiplayerMainMenu.OnLobbyEnter))]
     internal static class OnLobbyEnterPatch
     {
@@ -57,12 +65,25 @@ namespace PerAspera.MpModRecon
         {
             try
             {
-                string localMods = UnityEngine.PlayerPrefs.GetString("Mods", "");
+                string localMods = PlayerPrefs.GetString("Mods", "");
                 MpState.ModsSnapshot = string.IsNullOrEmpty(localMods) ? null : localMods;
+
+                // Tous les joueurs écrivent leur modset dans PlayerData (Steam member data)
+                try
+                {
+                    var self = Player.Self;
+                    if (self?.Data != null)
+                        self.Data[MpState.PA_MODSET_KEY] = localMods ?? "";
+                    MpModReconPlugin.L.Info($"[OnLobbyEnter] PlayerData[pa_modset] = \"{localMods}\"");
+                }
+                catch (Exception ex)
+                {
+                    MpModReconPlugin.L.Warning($"[OnLobbyEnter] PlayerData write EXCEPTION: {ex.Message}");
+                }
 
                 if (MpState.IsHost)
                 {
-                    // Hôte : écrire les mods dans LobbyData
+                    // Hôte : écrire aussi dans LobbyData (référence pour clients)
                     MpState.IsHost = false;
                     string toWrite = localMods ?? "";
                     lobby.Data[MpState.PA_MODSET_KEY] = toWrite;
@@ -70,15 +91,15 @@ namespace PerAspera.MpModRecon
                 }
                 else
                 {
-                    // Client : lire les mods de l'hôte et comparer
+                    // Client : comparer contre le LobbyData de l'hôte
                     string hostMods = "";
                     try { hostMods = lobby.Data[MpState.PA_MODSET_KEY] ?? ""; } catch { }
 
                     MpModReconPlugin.L.Info($"[OnLobbyEnter] CLIENT — pa_modset hôte=\"{hostMods}\" | local=\"{localMods}\"");
 
-                    if (NormalizeMods(hostMods) != NormalizeMods(localMods))
+                    if (MpState.NormalizeMods(hostMods) != MpState.NormalizeMods(localMods))
                     {
-                        MpState.MismatchMessage = $"Mods incompatibles !\nHôte: [{hostMods}]\nLocal: [{localMods}]";
+                        MpState.MismatchMessage = $"Mod mismatch!\nHost: [{hostMods}]\nLocal: [{localMods}]";
                         MpModReconPlugin.L.Warning($"[OnLobbyEnter] MISMATCH — {MpState.MismatchMessage}");
                     }
                     else
@@ -93,14 +114,16 @@ namespace PerAspera.MpModRecon
                 MpModReconPlugin.L.Warning($"[OnLobbyEnter] EXCEPTION: {ex.Message}");
             }
         }
+    }
 
-        // Compare les deux listes indépendamment de l'ordre et des espaces
-        static string NormalizeMods(string mods)
+    // ─── PATCH 2b : LobbyPanel.SetData — capturer la référence du lobby ─────
+    [HarmonyPatch(typeof(LobbyPanel), nameof(LobbyPanel.SetData))]
+    internal static class LobbyPanelSetDataPatch
+    {
+        static void Postfix(GameObject backPanel, Lobby lobby)
         {
-            if (string.IsNullOrEmpty(mods)) return "";
-            var parts = mods.Split(',');
-            System.Array.Sort(parts);
-            return string.Join(",", parts).Trim().ToLowerInvariant();
+            MpState.CurrentLobby = lobby;
+            MpModReconPlugin.L.Info("[LobbyPanel.SetData] référence lobby capturée");
         }
     }
 
@@ -153,9 +176,9 @@ namespace PerAspera.MpModRecon
         }
     }
 
-    // ─── PATCH 4 : LobbyPanel.OnStart — bloquer si mismatch (hôte uniquement) ──
-    // Ce patch bloque le bouton Start côté hôte et affiche le message dans l'UI.
-    // Il ne suffit pas seul : le client reçoit le "start" via réseau, pas ce code.
+    // ─── PATCH 4 : LobbyPanel.OnStart — hôte vérifie PlayerData de tous les joueurs ──
+    // Lit le pa_modset de chaque membre via Steam member data (écrit dans OnLobbyEnter).
+    // Si un client a des mods différents → bloque le démarrage et affiche le message.
     [HarmonyPatch(typeof(LobbyPanel), nameof(LobbyPanel.OnStart))]
     internal static class LobbyOnStartPatch
     {
@@ -163,6 +186,47 @@ namespace PerAspera.MpModRecon
         {
             try
             {
+                string localMods = PlayerPrefs.GetString("Mods", "");
+                MpState.MismatchMessage = null; // reset avant chaque vérification
+
+                var lobby = MpState.CurrentLobby;
+                if (lobby != null)
+                {
+                    try
+                    {
+                        string? selfId = null;
+                        try { selfId = Player.Self?.ID; } catch { }
+
+                        var players = lobby._players;
+                        if (players != null)
+                        {
+                            for (int i = 0; i < players.Count; i++)
+                            {
+                                var player = players[i];
+                                if (player == null) continue;
+
+                                // Ignorer soi-même (on se compare à nos propres PlayerPrefs)
+                                if (selfId != null && player.ID == selfId) continue;
+
+                                string playerMods = "";
+                                try { playerMods = player.Data?[MpState.PA_MODSET_KEY] ?? ""; } catch { }
+
+                                MpModReconPlugin.L.Info($"[LobbyPanel.OnStart] \"{player.Name}\" pa_modset=\"{playerMods}\"");
+
+                                if (MpState.NormalizeMods(playerMods) != MpState.NormalizeMods(localMods))
+                                {
+                                    MpState.MismatchMessage = $"Mod mismatch!\n{player.Name}: [{playerMods}]\nRequired: [{localMods}]";
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MpModReconPlugin.L.Warning($"[LobbyPanel.OnStart] Player check EXCEPTION: {ex.Message}");
+                    }
+                }
+
                 if (MpState.MismatchMessage != null)
                 {
                     MpModReconPlugin.L.Warning($"[LobbyPanel.OnStart] BLOQUÉ (hôte) — {MpState.MismatchMessage}");
@@ -187,9 +251,8 @@ namespace PerAspera.MpModRecon
     }
 
     // ─── PATCH 4b : MainMenu.StartGame — bloquer côté client ─────────────────
-    // StartGame() est une méthode STATIQUE appelée sur toutes les machines (hôte
-    // et client) quand une partie MP démarre. C'est le seul point commun qui tire
-    // des deux côtés — c'est ici qu'on bloque le client.
+    // StartGame() est statique et s'exécute sur toutes les machines (hôte et client)
+    // quand une partie MP démarre — c'est ici qu'on bloque le client.
     [HarmonyPatch(typeof(MainMenu), nameof(MainMenu.StartGame))]
     internal static class StartGamePatch
     {
@@ -200,7 +263,7 @@ namespace PerAspera.MpModRecon
                 if (!isMultiplayer || MpState.MismatchMessage == null) return true;
 
                 MpModReconPlugin.L.Warning($"[MainMenu.StartGame] BLOQUÉ (client) — {MpState.MismatchMessage}");
-                return false; // Empêche le chargement de scène
+                return false;
             }
             catch (Exception ex)
             {
