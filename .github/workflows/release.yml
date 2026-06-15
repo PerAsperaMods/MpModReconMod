@@ -13,5 +13,6 @@ jobs:
     with:
       mod-id: MpModReconMod
       mod-type: csharp
+      prerelease: true
     secrets:
       gamelibs-token: ${{ secrets.GAMELIBS_TOKEN }}
