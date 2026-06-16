@@ -3,10 +3,10 @@
   <PropertyGroup>
     <AssemblyName>MpModReconMod</AssemblyName>
     <AssemblyTitle>MpModReconMod</AssemblyTitle>
-    <AssemblyDescription>Phase 0-B diagnostic — logs MP mod gate flow (CreateLobby, InitializeUniverseStaticDependencies, ModsPanel.GenerateMods)</AssemblyDescription>
+    <AssemblyDescription>Vérification compatibilité mods MP — délègue au SDK MultiplayerModsService (v1.6.0)</AssemblyDescription>
     <RootNamespace>PerAspera.MpModRecon</RootNamespace>
-    <AssemblyVersion>1.5.0</AssemblyVersion>
-    <FileVersion>1.5.0</FileVersion>
+    <AssemblyVersion>1.6.0</AssemblyVersion>
+    <FileVersion>1.6.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
